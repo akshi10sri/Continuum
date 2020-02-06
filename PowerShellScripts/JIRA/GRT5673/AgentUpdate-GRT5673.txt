@@ -1,0 +1,265 @@
+<#
+   .SYNOPSIS
+        This script uninstall and install latest ITSPlatform on machine
+    
+   .DESCRIPTION
+        This script will download junomanager.exe and run itre-install ITSPlatform on machine. IF installation gets failed then download Platform-Agent-Exe.exe from an URL and install it
+
+   .NOTES
+         Version:           1.0
+         Author:            Akshi Srivastava
+         Team:              GRT
+         Creation Date:     30/01/2020
+         JIRA:              GRT-5693
+#>
+$ErrorActionPreference = 'Stop'
+
+#region Functions
+
+#Download file from URL
+function Get-FileDownload ($URL, $LocalFilePath) {
+    $WebClient = New-Object System.Net.WebClient
+    $WebClient.DownloadFile($URL, $LocalFilePath)
+}
+
+#Function to check existence of ITSPlatform on machine
+function Get-LatestInstalledAgent {
+    try {
+        $regpath = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\" #{ff6f6c90-f09e-4e0e-9bc9-ba2b7b49b5f3}"
+        $agent_exist = Get-Childitem -Path $regpath |Get-ItemProperty -Name $_.Name |Where-Object {($_.DisplayName -like "ITSPlatform*") -and ($_.UninstallString -like "*Platform-Agent-Exe.exe*")}|Select-Object -Property DisplayName, DisplayVersion
+        if($null -ne $agent_exist){
+            return $agent_exist
+        }
+        else {
+            return "Failure - Empty value"
+        }    
+    }
+    catch {
+        return "Failure - $($_.Exception.Message)"    
+    }
+}
+
+#Function to create logs of script at path C:\Program Files (x86)\ITSPlatform\tmp
+function Get-Logdata([string]$Logfile,[string]$Logdata,[string]$Logdatatype) {
+"$(Get-Date) [$Logdatatype]   :   $Logdata" |Out-File $Logfile -Append -ErrorAction Stop -Force
+}
+#endregion Functions
+
+#region Main
+if ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
+    if ($myInvocation.Line) {
+        &"$env:systemroot\sysnative\windowspowershell\v1.0\powershell.exe" -NonInteractive -NoProfile $myInvocation.Line
+    }
+    else {
+        &"$env:systemroot\sysnative\windowspowershell\v1.0\powershell.exe" -NonInteractive -NoProfile -file "$($myInvocation.InvocationName)" $args
+    }
+    exit $lastexitcode
+}  
+
+#check for supported OS version
+if(!([System.Environment]::OSVersion.Version -ge [system.version]'6.1')){
+    Write-Output "This script only supports Windows Server 2008 R2\Windows 7 and above."
+    exit
+}
+
+#check for existence of ITSPlatform folder to proceed further
+[String]$Destination = "C:\Program Files (x86)\ITSPlatform"
+if (!(Test-Path $Destination)) {
+    Write-Output "ITSPlatform folder does not exist on machine. Hence terminating the script."
+    Exit
+}
+
+#Log file path
+[string]$logfilepath = "$Destination\tmp\Agent_Update$(Get-date -f yyyy-MM-dd-hh-mm).log"
+
+# Download the file to a specific location and Unzip file to folder JunoManager
+try {
+    [String]$file = "$Destination\Agent_Update.zip"
+    [String]$juno_url = "http://update.itsupport247.net/JunoComponentUpdate/Junomanager/junomanager.zip"
+    Get-Logdata -Logfile $logfilepath -Logdata "Downloading junomanager.zip file" -Logdatatype "Information"
+    "Downloading junomanager.zip file.."
+    Get-FileDownload -URL $juno_url -LocalFilePath $file  #calling download function
+    if (-not(Test-Path $file)) { 
+        Get-Logdata -Logfile $logfilepath -Logdata "Download unsuccessfull" -Logdatatype "Information"
+        "Download unsuccessfull  :  $juno_url"
+        Exit
+    }
+}
+catch {
+    "[ERROR]   :  Download failed for junomanager.zip file ($($_.Exception.Message))"
+    Get-Logdata -Logfile $logfilepath -Logdata "Download failed for junomanager.zip file ($($_.Exception.Message))" -Logdatatype "Error"
+    Exit 
+}   
+
+#Unzip the file and check if junomanager.exe file found at unzip location
+try {
+    $setup_path = (New-Item -Path $Destination -Name "Setup$(Get-Date -f yyyy-MM-dd-hh-mm-ss)" -ItemType Directory -Force -ErrorAction SilentlyContinue).FullName
+    if ($? -eq $true) {
+        #unzip code
+        Get-Logdata -Logfile $logfilepath -Logdata "Unziping file..." -Logdatatype "Information"
+        "Unzipping file..."
+        Add-Type -assembly "System.IO.Compression.Filesystem";
+        [IO.Compression.Zipfile]::ExtractToDirectory($file, $setup_path)
+        Get-Logdata -Logfile $logfilepath -Logdata "Unzip done" -Logdatatype "Information"
+        "Unzip done"
+    }
+    else {
+        "Error occurred while creating new folder for unzipping junomanager.zip. Hence stopped further execution"
+        Get-Logdata -Logfile $logfilepath -Logdata "Error occurred while creating new folder for unzipping Agent_Update.zip" -Logdatatype "Error"
+        Exit
+    }
+}
+catch {
+    "[ERROR]  :  Failed to unzip junomanager.zip ($($_.Exception.Message))"
+    Get-Logdata -Logfile $logfilepath -Logdata "Failed to unzip junomanager.zip ($($_.Exception.Message))" -Logdatatype "Error"
+    Exit
+}
+finally {
+    if ((Test-Path $file) -eq $true) {
+        Remove-Item -path $file -Force -ErrorAction SilentlyContinue
+        if ($? -eq $true) {
+            Get-Logdata -Logfile $logfilepath -Logdata "Removed $file file" -Logdatatype "Information"
+        }
+        else {
+            Get-Logdata -Logfile $logfilepath -Logdata "Unable to remove $file file" -Logdatatype "Information"
+        }
+    }
+}
+
+try {
+    #Run junomanager.exe exe and check for agent installed on machine from registry
+    $version_before = Get-LatestInstalledAgent
+    if ($version_before -notlike "Failure*") {
+        "Version of ITSPlatform before execution of junomanager.exe  :  $($version_before.DisplayVersion)"
+        Get-Logdata -Logfile $logfilepath -Logdata "Version of ITSPlatform before execution of junomanager.exe  =  $($version_before.DisplayVersion)" -Logdatatype "Information"
+    }
+    else {
+        Get-Logdata -Logfile $logfilepath -Logdata "Version of ITSPlatform before execution of junomanager.exe  :  Not found ($version_before)" -Logdatatype "Information"
+        "Version of ITSPlatform before execution of junomanager.exe  :  Not found ($version_before)"
+    }
+    "Executing junomanager.exe with flag cleaninstall"
+    Get-Logdata -Logfile $logfilepath -Logdata "Start junomanager.exe utility with flag cleaninstall" -Logdatatype "Information"
+    
+    #Run junomanager.exe file with flag cleaninstall
+    $result1 = Start-Process "$setup_path\setuputils\junomanager.exe" -ArgumentList "cleaninstall" -Wait -PassThru
+    $install = $false
+    if ($result1.ExitCode -eq 0) {
+            if((Get-Content -Path "$setup_path\setuputils\AppManager.log") -like "*Expected version already installed*") {
+                "Expected version of ITSPlatform is already installed on machine"
+                Get-Logdata -Logfile $logfilepath -Logdata "Expected version of ITSPlatform is already installed" -Logdatatype "Information"
+                Exit
+            } 
+            Get-Logdata -Logfile $logfilepath -Logdata "Execution completed successfully" -Logdatatype "Information"
+            $i = 1
+            while ($i -le 5) {
+                #check for latest version of ITSPlatform from registry
+                Get-Logdata -Logfile $logfilepath -Logdata " Attempt $i for checking ITSPlatform on machine " -Logdatatype "Information"
+                "Attempt $i for checking ITSPlatform on machine ..."
+                Get-Logdata -Logfile $logfilepath -Logdata "Sleep for 180 seconds" -Logdatatype "Information"
+                Start-Sleep -Seconds 180
+                $status1 = Get-LatestInstalledAgent
+                if ($status1 -notlike "Failure*") {
+                    "ITSPlatform found on machine"
+                    "Version  :  $($status1.DisplayVersion)"
+                    Get-Logdata -Logfile $logfilepath -Logdata "ITSPlatform found on machine with version $($status1.DisplayVersion)" -Logdatatype "Information"
+                    $install = $true
+                    break
+                }
+                $i++
+            }
+        }
+    else {
+        "Error occurred while executing junomanager.exe on machine with exitcode $($result1.ExitCode)"
+        Get-Logdata -Logfile $logfilepath -Logdata "Error occurred while executing junomanager.exe on machine with exitcode $($result1.ExitCode)" -Logdatatype "Error"
+        Exit
+    }
+}
+catch {
+    "[ERROR]  :  Execution of junomanager.exe gets failed ($($_.Exception.Message))"
+    Get-Logdata -Logfile $logfilepath -Logdata "Execution of junomanager.exe gets failed ($($_.Exception.Message))" -Logdatatype "Error"
+    Exit
+}
+
+finally {
+    if ((Test-Path $setup_path) -eq $true) {
+        #copy and rename file in tmp folder
+        Copy-Item "$setup_path\setuputils\AppManager.log" "$Destination\tmp\AppManager_$(Get-date -Format yyyy-MM-dd-hh-mm).log" -ErrorAction SilentlyContinue -Force
+        #Remove complete folder
+        Remove-Item -path $setup_path -Recurse -Force -ErrorAction SilentlyContinue
+        if ($? -eq $true) {
+            Get-Logdata -Logfile $logfilepath -Logdata "Removed $setup_path folder" -Logdatatype "Information"
+        }
+        else {
+            Get-Logdata -Logfile $logfilepath -Logdata "Unable to remove $setup_path folder" -Logdatatype "Information"
+        }
+    }
+}
+
+#install agent via url if installation if failed by junomanager.exe
+if ($install -eq $false) {
+        "junomanager.exe failed to install ITSPlatform on machine"
+        for ($repeat = 0; $repeat -lt 2; $repeat++) {
+            try {
+                [String]$agent_path = "$Destination\PlatformAgent$(Get-Date -Format yyyy-MM-dd-hh-mm-ss).exe"
+                $agent_url = "http://update.itsupport247.net/InstallJunoAgent/Platform-Agent-Exe.exe"
+                "Downloading Platform-Agent-Exe.exe attempt $repeat ..."
+                Get-Logdata -Logfile $logfilepath -Logdata "Unable to remove $Destination\setuputils folder" -Logdatatype "Information"
+                Get-FileDownload -URL $agent_url -LocalFilePath $agent_path
+                if (-not(Test-Path $agent_path)) { 
+                    "Download Failed : $agent_url"
+                    Get-Logdata -Logfile $logfilepath -Logdata "Download failed for $agent_url" -Logdatatype "Information"
+                    Get-Logdata -Logfile $logfilepath -Logdata "Sleep for 120 seconds and will try again" -Logdatatype "Information"
+                    Start-Sleep -Seconds 120
+                    continue
+                }
+                else {
+                    Get-Logdata -Logfile $logfilepath -Logdata "Installing ITSPlatform.." -Logdatatype "Information"
+                    $result2 = Start-Process $agent_path -ArgumentList "ENV=PROD /s" -Wait -PassThru
+                    if ($result2.ExitCode -eq 0) {
+                        Get-Logdata -Logfile $logfilepath -Logdata "Installed successfully" -Logdatatype "Information"
+                        $status2 = Get-LatestInstalledAgent
+                        if ($status2 -ne "Failure") {
+                            "ITSPlatform found on machine"
+                            "Version of ITSPlatform  :  $($status2.DisplayVersion)"
+                            Get-Logdata -Logfile $logfilepath -Logdata "ITSPlatform found on machine with version $($status2.DisplayVersion)" -Logdatatype "Information"
+                            break
+                        }
+                        else {
+                            "ITSPlatform not found on machine"
+                            Get-Logdata -Logfile $logfilepath -Logdata "ITSPlatform not found on machine" -Logdatatype "Information"
+                            Get-Logdata -Logfile $logfilepath -Logdata "Sleep for 120 seconds and will try again" -Logdatatype "Information"
+                            Start-Sleep -Seconds 120
+                            continue  
+                        }    
+                    }
+                    else {
+                        "Failed to install ITSPlatform"
+                        Get-Logdata -Logfile $logfilepath -Logdata "ITSPlatform installation failed" -Logdatatype "Information"
+                        Get-Logdata -Logfile $logfilepath -Logdata "Sleep for 120 seconds and will try again" -Logdatatype "Information"
+                        Start-Sleep -Seconds 120
+                        continue    
+                    }
+                }
+            }
+            catch {
+                "[ERROR]   :  $($_.Exception.Message)"
+                Get-Logdata -Logfile $logfilepath -Logdata "Exception occurred while installing agent ($($_.Exception.Message))" -Logdatatype "Error"
+                start-sleep -Seconds 120
+                continue  
+            }
+            finally {
+                if ((Test-Path $agent_path) -eq $true) {
+                    Remove-Item -path $agent_path -Force -ErrorAction SilentlyContinue
+                    if ($? -eq $true) {
+                        Get-Logdata -Logfile $logfilepath -Logdata "Removed $agent_path file" -Logdatatype "Information"
+                    }
+                    else {
+                        Get-Logdata -Logfile $logfilepath -Logdata "Unable to remove $agent_path file" -Logdatatype "Information"
+                    }
+                }
+            }
+        }
+}
+    #endregion Main
+
+

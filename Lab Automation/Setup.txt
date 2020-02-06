@@ -1,0 +1,27 @@
+# install Hyper-v role on the machine.
+
+# execution policy needs to enabled on the machine
+Set-ExecutionPolicy unrestricted
+
+# installation of required modules from powershellgallery.com and then import them
+Install-Module polaris, pshtml, automatedlab -Verbose -Force -Confirm:$false 
+Import-Module polaris, pshtml, automatedlab
+
+# NOTE: Telemetry should be no - otherwise it can lead to privacy issues.
+
+# to create a new lab source folder to hold ISO's and pther softwares
+New-LabSourcesFolder
+
+# once the folder is created move the ISO file to the folder (D:\LabSources\ISOs)
+
+set-item -force WSMan:\localhost\Service\AllowUnencrypted $true
+
+# make sure internet connection is established
+
+# Once the script runs for the first time:
+	PowerShell Remoting, Add all hosts to trusted host registry and enables CredSSP
+
+
+
+
+
